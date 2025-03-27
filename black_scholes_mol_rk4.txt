@@ -1,0 +1,123 @@
+
+%% Project 1
+    % Parameters
+    r = 0.06; sigma = 0.3; T = 1; K = 10; S_star = 15;
+    NS = 50; Nt = 300;
+    call = true
+
+    % Solve
+    [T, S, U] = runge_kutta_MOL_solver(r, sigma, T, K, S_star, NS, Nt, call);
+    
+    % Plot solution
+    surf(S, T, U);
+    shading interp
+    xlabel('S'); ylabel('t'); zlabel('U(S, t)');
+    if call
+        title('Runge-Kutta MOL solution (European call)');
+    else
+        title('Runge-Kutta MOL solution (European put)');
+    end
+
+
+%% Functions
+
+function [T_grid, S_grid, U_full] = runge_kutta_MOL_solver(r, sigma, T, K, S_star, NS, Nt, call)
+    % Init grid
+    S = linspace(0, S_star, NS)';
+    hS = S(2) - S(1);
+    tspan = linspace(0, T, Nt);
+
+    % Initial condition
+    if call
+        U0 = max(S - K, 0);  % Call option payoff
+    else
+        U0 = max(K - S, 0);  % Put option payoff
+    end
+
+    % Boundary conditions
+    if call
+        ua = @(t) 0;
+        ub = @(t) S_star - K * exp(-r * (T - t));
+    else
+        ua = @(t) K * exp(-r * (T - t)) - S_star;
+        ub = @(t) 0;
+    end
+
+    % Generate A matrix for MOL
+    [A, alpha, gamma] = init_matrix(S, sigma, r, NS, hS);
+
+    % Define MOL for Runge Kutta
+    f = @(U, t) method_of_lines(U, t, A, ua, ub, alpha, gamma);
+    
+    % Time step using Runge Kutta for interior points
+    U_inner = runge_kutta_4(f, U0(2:end-1), tspan);
+
+    % Reconstruct full solution
+    U_full = zeros(NS, Nt);
+    U_full(1, :) = ua(tspan);
+    U_full(end, :) = ub(tspan);
+    U_full(2:end-1, :) = U_inner;
+
+    [T_grid, S_grid] = meshgrid(tspan, S);
+end
+
+
+
+function U = runge_kutta_4(f, U0, tspan)
+    % Time step using Runge Kutta
+    Nt = length(tspan);
+    ht = tspan(2) - tspan(1);
+    NS = length(U0);
+    U = zeros(NS, Nt);
+    U(:,1) = U0;
+
+    for j = 1:Nt-1
+        t = tspan(j);
+        k1 = f(U(:,j), t);
+        k2 = f(U(:,j) + ht/2 * k1, t + ht/2);
+        k3 = f(U(:,j) + ht/2 * k2, t + ht/2);
+        k4 = f(U(:,j) + ht * k3, t + ht);
+        U(:,j+1) = U(:,j) + ht/6 * (k1 + 2*k2 + 2*k3 + k4);
+    end
+end
+
+
+function [A, alpha_vec, gamma_vec] = init_matrix(S, sigma, r, NS, hS)
+    % Create the A matrix and calculate the coefficient vectors needed
+    A = zeros(NS-2, NS-2);
+    alpha_vec = zeros(NS-2, 1);
+    gamma_vec = zeros(NS-2, 1);
+
+    for i = 2:NS-1
+        Si = S(i);
+        % Calc coefficients
+        alpha = 0.5 * sigma^2 * Si^2 / hS^2 - 0.5 * r * Si / hS;
+        beta  = -sigma^2 * Si^2 / hS^2 - r;
+        gamma = 0.5 * sigma^2 * Si^2 / hS^2 + 0.5 * r * Si / hS;
+
+        idx = i - 1;
+        % Save constants in vector for MOL
+        alpha_vec(idx) = alpha;
+        gamma_vec(idx) = gamma;
+
+        % Create tridiagonal matrix
+        if i > 2, A(idx, idx-1) = alpha; end
+        A(idx, idx) = beta;
+        if i < NS-1, A(idx, idx+1) = gamma; end
+    end
+end
+
+
+
+function W_prim = method_of_lines(U, t, A, ua, ub, alpha, gamma)
+    % Solve system for interior points
+    W_prim = A * U;
+
+    % Dirichlet boundary values at this time
+    left = ua(t);
+    right = ub(t);
+
+    % Add boundary contributions
+    W_prim(1)   = W_prim(1)   + alpha(1) * left;
+    W_prim(end) = W_prim(end) + gamma(end) * right;
+end
